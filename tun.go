@@ -17,9 +17,30 @@ import (
 )
 
 type Handler interface {
-	PrepareConnection(network string, source M.Socksaddr, destination M.Socksaddr) error
+	PrepareConnection(network string, source M.Socksaddr, destination M.Socksaddr, routeContext DirectRouteContext) (DirectRouteDestination, error)
 	N.TCPConnectionHandlerEx
 	N.UDPConnectionHandlerEx
+}
+
+type DirectRouteContext interface {
+	WritePacket(packet []byte) error
+}
+
+type DirectRouteAction interface {
+	Timeout() bool
+	Close() error
+}
+
+type DirectRouteReject struct {
+	Drop bool
+}
+
+func (d *DirectRouteReject) Timeout() bool {
+	return true
+}
+
+func (d *DirectRouteReject) Close() error {
+	return nil
 }
 
 type Tun interface {

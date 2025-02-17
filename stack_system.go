@@ -42,6 +42,7 @@ type System struct {
 	tcpPort6           uint16
 	tcpNat             *TCPNat
 	udpNat             *udpnat.Service
+	directNat          *RouteMapping
 	bindInterface      bool
 	interfaceFinder    control.InterfaceFinder
 	frontHeadroom      int
@@ -154,6 +155,7 @@ func (s *System) start() error {
 	}
 	s.tcpNat = NewNat(s.ctx, s.udpTimeout)
 	s.udpNat = udpnat.New(s.handler, s.preparePacketConnection, s.udpTimeout, false)
+	s.directNat = NewRouteMapping(s.udpTimeout)
 	return nil
 }
 
@@ -320,6 +322,9 @@ func (s *System) processIPv4(ipHdr header.IPv4) (writeBack bool, err error) {
 	case header.ICMPv4ProtocolNumber:
 		err = s.processIPv4ICMP(ipHdr, ipHdr.Payload())
 	}
+	if err != nil {
+		writeBack = false
+	}
 	return
 }
 
@@ -335,6 +340,9 @@ func (s *System) processIPv6(ipHdr header.IPv6) (writeBack bool, err error) {
 		err = s.processIPv6UDP(ipHdr, ipHdr.Payload())
 	case header.ICMPv6ProtocolNumber:
 		err = s.processIPv6ICMP(ipHdr, ipHdr.Payload())
+	}
+	if err != nil {
+		writeBack = false
 	}
 	return
 }
@@ -536,7 +544,7 @@ func (s *System) processIPv6UDP(ipHdr header.IPv6, udpHdr header.UDP) error {
 }
 
 func (s *System) preparePacketConnection(source M.Socksaddr, destination M.Socksaddr, userData any) (bool, context.Context, N.PacketWriter, N.CloseHandlerFunc) {
-	pErr := s.handler.PrepareConnection(N.NetworkUDP, source, destination)
+	_, pErr := s.handler.PrepareConnection(N.NetworkUDP, source, destination, nil)
 	if pErr != nil {
 		if pErr != ErrDrop {
 			if source.IsIPv4() {
@@ -581,6 +589,30 @@ func (s *System) preparePacketConnection(source M.Socksaddr, destination M.Socks
 func (s *System) processIPv4ICMP(ipHdr header.IPv4, icmpHdr header.ICMPv4) error {
 	if icmpHdr.Type() != header.ICMPv4Echo || icmpHdr.Code() != 0 {
 		return nil
+	}
+	sourceAddr := ipHdr.SourceAddr()
+	destinationAddr := ipHdr.DestinationAddr()
+	rawAction := s.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() DirectRouteAction {
+		destination, pErr := s.handler.PrepareConnection(
+			N.NetworkICMPv4,
+			M.SocksaddrFrom(sourceAddr, 0),
+			M.SocksaddrFrom(destinationAddr, 0),
+			&systemICMPDirectPacketWriter4{s.tun, s.frontHeadroom + PacketOffset, sourceAddr},
+		)
+		if pErr != nil {
+			return &DirectRouteReject{
+				Drop: pErr == ErrDrop,
+			}
+		}
+		return destination
+	})
+	switch action := rawAction.(type) {
+	case *DirectRouteReject:
+		if action.Drop {
+			return nil
+		}
+	case DirectRouteDestination:
+		return action.WritePacket(buf.As(ipHdr).ToOwned())
 	}
 	icmpHdr.SetType(header.ICMPv4EchoReply)
 	sourceAddress := ipHdr.SourceAddr()
@@ -634,6 +666,30 @@ func (s *System) rejectIPv4WithICMP(ipHdr header.IPv4, code header.ICMPv4Code) e
 func (s *System) processIPv6ICMP(ipHdr header.IPv6, icmpHdr header.ICMPv6) error {
 	if icmpHdr.Type() != header.ICMPv6EchoRequest || icmpHdr.Code() != 0 {
 		return nil
+	}
+	sourceAddr := ipHdr.SourceAddr()
+	destinationAddr := ipHdr.DestinationAddr()
+	rawAction := s.directNat.Lookup(DirectRouteSession{Source: sourceAddr, Destination: destinationAddr}, func() DirectRouteAction {
+		destination, pErr := s.handler.PrepareConnection(
+			N.NetworkICMPv6,
+			M.SocksaddrFrom(sourceAddr, 0),
+			M.SocksaddrFrom(destinationAddr, 0),
+			&systemICMPDirectPacketWriter6{s.tun, s.frontHeadroom + PacketOffset, sourceAddr},
+		)
+		if pErr != nil {
+			return &DirectRouteReject{
+				Drop: pErr == ErrDrop,
+			}
+		}
+		return destination
+	})
+	switch action := rawAction.(type) {
+	case *DirectRouteReject:
+		if action.Drop {
+			return nil
+		}
+	case DirectRouteDestination:
+		return action.WritePacket(buf.As(ipHdr).ToOwned())
 	}
 	icmpHdr.SetType(header.ICMPv6EchoReply)
 	sourceAddress := ipHdr.SourceAddr()
@@ -762,6 +818,50 @@ func (w *systemUDPPacketWriter6) WritePacket(buffer *buf.Buffer, destination M.S
 	} else {
 		udpHdr.SetChecksum(0)
 	}
+	if PacketOffset > 0 {
+		PacketFillHeader(newPacket.ExtendHeader(PacketOffset), header.IPv6Version)
+	} else {
+		newPacket.Advance(-w.frontHeadroom)
+	}
+	return common.Error(w.tun.Write(newPacket.Bytes()))
+}
+
+type systemICMPDirectPacketWriter4 struct {
+	tun           Tun
+	frontHeadroom int
+	source        netip.Addr
+}
+
+func (w *systemICMPDirectPacketWriter4) WritePacket(p []byte) error {
+	newPacket := buf.NewSize(w.frontHeadroom + len(p))
+	defer newPacket.Release()
+	newPacket.Resize(w.frontHeadroom, 0)
+	newPacket.Write(p)
+	ipHdr := header.IPv4(newPacket.Bytes())
+	ipHdr.SetDestinationAddr(w.source)
+	ipHdr.SetChecksum(0)
+	ipHdr.SetChecksum(^ipHdr.CalculateChecksum())
+	if PacketOffset > 0 {
+		PacketFillHeader(newPacket.ExtendHeader(PacketOffset), header.IPv4Version)
+	} else {
+		newPacket.Advance(-w.frontHeadroom)
+	}
+	return common.Error(w.tun.Write(newPacket.Bytes()))
+}
+
+type systemICMPDirectPacketWriter6 struct {
+	tun           Tun
+	frontHeadroom int
+	source        netip.Addr
+}
+
+func (w *systemICMPDirectPacketWriter6) WritePacket(p []byte) error {
+	newPacket := buf.NewSize(w.frontHeadroom + len(p))
+	defer newPacket.Release()
+	newPacket.Resize(w.frontHeadroom, 0)
+	newPacket.Write(p)
+	ipHdr := header.IPv6(newPacket.Bytes())
+	ipHdr.SetDestinationAddr(w.source)
 	if PacketOffset > 0 {
 		PacketFillHeader(newPacket.ExtendHeader(PacketOffset), header.IPv6Version)
 	} else {
