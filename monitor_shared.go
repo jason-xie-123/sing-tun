@@ -35,6 +35,8 @@ func (m *networkUpdateMonitor) emit() {
 }
 
 type defaultInterfaceMonitor struct {
+	mu sync.Mutex
+
 	interfaceFinder       control.InterfaceFinder
 	overrideAndroidVPN    bool
 	underNetworkExtension bool
@@ -89,7 +91,9 @@ func (m *defaultInterfaceMonitor) postCheckUpdate() {
 	} else if err != nil {
 		m.logger.Error("check interface: ", err)
 	} else {
+		m.mu.Lock()
 		m.noRoute = false
+		m.mu.Unlock()
 	}
 }
 

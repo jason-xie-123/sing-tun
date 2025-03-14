@@ -1,5 +1,7 @@
 module github.com/sagernet/sing-tun
 
+replace github.com/sagernet/sing => github.com/jason-xie-123/sing v0.0.0-20250314074552-3f00b44cdfba
+
 go 1.20
 
 require (
@@ -9,7 +11,7 @@ require (
 	github.com/sagernet/gvisor v0.0.0-20250217052116-ed66b6946f72
 	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a
 	github.com/sagernet/nftables v0.3.0-beta.4
-	github.com/sagernet/sing v0.6.3
+	github.com/sagernet/sing v0.5.0-rc.4
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/exp v0.0.0-20240613232115-7f521ea00fb8
 	golang.org/x/net v0.35.0
