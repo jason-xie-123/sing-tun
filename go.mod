@@ -1,6 +1,6 @@
 module github.com/sagernet/sing-tun
 
-replace github.com/sagernet/sing => github.com/jason-xie-123/sing v0.0.0-20250314074552-3f00b44cdfba
+replace github.com/sagernet/sing => github.com/jason-xie-123/sing v0.0.0-20250314091825-e4607b758522
 
 go 1.20
 
