@@ -35,14 +35,12 @@ func (m *networkUpdateMonitor) emit() {
 }
 
 type defaultInterfaceMonitor struct {
-	mu sync.Mutex
-
 	interfaceFinder       control.InterfaceFinder
 	overrideAndroidVPN    bool
 	underNetworkExtension bool
 	defaultInterface      atomic.Pointer[control.Interface]
 	androidVPNEnabled     bool
-	noRoute               bool
+	noRoute               atomic.Bool
 	networkMonitor        NetworkUpdateMonitor
 	checkUpdateTimer      *time.Timer
 	element               *list.Element[NetworkUpdateCallback]
@@ -83,17 +81,15 @@ func (m *defaultInterfaceMonitor) postCheckUpdate() {
 	}
 	err = m.checkUpdate()
 	if errors.Is(err, ErrNoRoute) {
-		if !m.noRoute {
-			m.noRoute = true
+		if !m.noRoute.Load() {
+			m.noRoute.Store(true)
 			m.defaultInterface.Store(nil)
 			m.emit(nil, 0)
 		}
 	} else if err != nil {
 		m.logger.Error("check interface: ", err)
 	} else {
-		m.mu.Lock()
-		m.noRoute = false
-		m.mu.Unlock()
+		m.noRoute.Store(false)
 	}
 }
 
