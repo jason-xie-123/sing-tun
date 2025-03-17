@@ -47,6 +47,8 @@ type defaultInterfaceMonitor struct {
 	access                sync.Mutex
 	callbacks             list.List[DefaultInterfaceUpdateCallback]
 	logger                logger.Logger
+
+	checkUpdateTimerAccess sync.Mutex
 }
 
 func NewDefaultInterfaceMonitor(networkMonitor NetworkUpdateMonitor, logger logger.Logger, options DefaultInterfaceMonitorOptions) (DefaultInterfaceMonitor, error) {
@@ -66,6 +68,8 @@ func (m *defaultInterfaceMonitor) Start() error {
 }
 
 func (m *defaultInterfaceMonitor) delayCheckUpdate() {
+	m.checkUpdateTimerAccess.Lock()
+	defer m.checkUpdateTimerAccess.Unlock()
 	if m.checkUpdateTimer == nil {
 		m.checkUpdateTimer = time.AfterFunc(time.Second, m.postCheckUpdate)
 	} else {
